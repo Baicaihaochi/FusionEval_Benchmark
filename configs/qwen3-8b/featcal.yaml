@@ -1,0 +1,10 @@
+schema_version: 1
+common: calibration_common.yaml
+method: featcal
+parameters:
+  ridge_lambda: 0.1
+  anchor_rho: 1.5
+  teacher_alpha: 0.1
+  examples: 128
+  prefill_chunk_size: 256
+output: ta_featcal

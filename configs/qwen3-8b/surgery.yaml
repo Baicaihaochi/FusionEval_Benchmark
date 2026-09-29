@@ -1,0 +1,11 @@
+schema_version: 1
+common: calibration_common.yaml
+method: surgery
+parameters:
+  rank: 32
+  learning_rate: 0.0001
+  steps: 500
+  examples: 128
+  feature_cache: cpu
+  prefill_chunk_size: 256
+output: ta_surgery

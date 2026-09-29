@@ -1,0 +1,15 @@
+schema_version: 1
+common: common.yaml
+method: regmean
+parameters:
+  alpha: 0.7
+  examples: 128
+  leftover_edge: mean
+  leftover_1d: mean
+data:
+  if: ../../data/if.jsonl
+  math: ../../data/math.jsonl
+  science: ../../data/science.jsonl
+  code: ../../data/code.jsonl
+  agent: ../../data/agent.jsonl
+output: regmean

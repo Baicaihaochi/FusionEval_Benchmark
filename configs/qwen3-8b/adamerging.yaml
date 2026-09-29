@@ -1,0 +1,6 @@
+schema_version: 1
+common: common.yaml
+method: adamerging
+parameters:
+  embed_coefficient: mean
+output: adamerging

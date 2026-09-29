@@ -1,0 +1,5 @@
+schema_version: 1
+common: common.yaml
+method: average
+parameters: {}
+output: soup

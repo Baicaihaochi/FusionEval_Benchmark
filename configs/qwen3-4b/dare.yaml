@@ -1,0 +1,7 @@
+schema_version: 1
+common: common.yaml
+method: dare
+parameters:
+  drop_rate: 0.2
+  scale: 0.3
+output: dare

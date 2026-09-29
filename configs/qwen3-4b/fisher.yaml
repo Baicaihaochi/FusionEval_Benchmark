@@ -1,0 +1,17 @@
+schema_version: 1
+common: common.yaml
+method: fisher
+parameters:
+  examples: 128
+  estimator: sampled
+  samples: 8
+  normalize_fishers: true
+  favor_target_model: false
+  fisher_floor: 1.0e-06
+  coefficients:
+  - 0.2
+  - 0.2
+  - 0.2
+  - 0.2
+  - 0.2
+output: fisher

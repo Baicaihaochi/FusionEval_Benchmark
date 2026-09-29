@@ -1,0 +1,8 @@
+schema_version: 1
+common: common.yaml
+method: ties
+parameters:
+  density: 0.2
+  scale: 1.0
+  merge_func: mean
+output: ties

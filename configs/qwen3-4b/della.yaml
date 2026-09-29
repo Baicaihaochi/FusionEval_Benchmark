@@ -1,0 +1,8 @@
+schema_version: 1
+common: common.yaml
+method: della
+parameters:
+  drop_rate: 0.1
+  window: 0.14
+  scale: 1.0
+output: della

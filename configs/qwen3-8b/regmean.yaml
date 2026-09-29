@@ -1,0 +1,13 @@
+schema_version: 1
+common: common.yaml
+method: regmean
+parameters:
+  alpha: 0.7
+  examples: 128
+  variant: raw
+  solver: exact
+  gram_dtype: float32
+  edge_head: regmean
+  leftover_edge: mean
+  leftover_1d: mean
+output: regmean

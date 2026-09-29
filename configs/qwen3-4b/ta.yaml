@@ -1,0 +1,6 @@
+schema_version: 1
+common: common.yaml
+method: task_arithmetic
+parameters:
+  scale: 0.3
+output: ta

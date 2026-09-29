@@ -1,0 +1,6 @@
+schema_version: 1
+common: common.yaml
+method: localize_stitch
+parameters:
+  density: 0.4
+output: localize_stitch
