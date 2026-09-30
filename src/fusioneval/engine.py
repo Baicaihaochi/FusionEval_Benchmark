@@ -194,29 +194,24 @@ def validate_saved(staging: Path, expected, tie_word_embeddings: bool) -> Dict[s
                 count += 1
     if count != len(expected):
         raise CheckpointError("saved tensor count mismatch")
-    try:
-        from transformers import AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM
 
-        model = AutoModelForCausalLM.from_pretrained(
-            str(staging), torch_dtype="auto", low_cpu_mem_usage=True
-        )
-        tied = model.get_input_embeddings().weight.data_ptr() == model.get_output_embeddings().weight.data_ptr()
-        if tied != tie_word_embeddings:
-            raise CheckpointError("saved model does not preserve the configured embedding/head tying")
-        vocab = int(model.config.vocab_size)
-        ids = torch.tensor([[min(1, vocab - 1), min(2, vocab - 1)]])
-        with torch.inference_mode():
-            logits = model(input_ids=ids).logits
-        if not bool(torch.isfinite(logits).all()):
-            raise CheckpointError("saved model produced non-finite fixed-prefix logits")
-        result = {"reload": True, "weight_tying": tied, "finite_prefix_forward": True}
-        del model, logits
-        gc.collect()
-        return result
-    except CheckpointError:
-        raise
-    except Exception as exc:
-        raise CheckpointError(f"Transformers reload validation failed: {exc}") from exc
+    model = AutoModelForCausalLM.from_pretrained(
+        str(staging), torch_dtype="auto", low_cpu_mem_usage=True
+    )
+    tied = model.get_input_embeddings().weight.data_ptr() == model.get_output_embeddings().weight.data_ptr()
+    if tied != tie_word_embeddings:
+        raise CheckpointError("saved model does not preserve the configured embedding/head tying")
+    vocab = int(model.config.vocab_size)
+    ids = torch.tensor([[min(1, vocab - 1), min(2, vocab - 1)]])
+    with torch.inference_mode():
+        logits = model(input_ids=ids).logits
+    if not bool(torch.isfinite(logits).all()):
+        raise CheckpointError("saved model produced non-finite fixed-prefix logits")
+    result = {"reload": True, "weight_tying": tied, "finite_prefix_forward": True}
+    del model, logits
+    gc.collect()
+    return result
 
 def roles(key: str, tied: bool):
     if key == "model.embed_tokens.weight":
@@ -308,7 +303,7 @@ def run(config: RunConfig, *, provenance=None):
         if config.method.compute_precision == "float32"
         else config.runtime["precision"]
     )
-    compute_dtype = torch.bfloat16 if effective_precision == "mergebench" else torch.float32
+    compute_dtype = torch.bfloat16 if effective_precision == "bfloat16" else torch.float32
     tied = bool(json.loads((config.base / "config.json").read_text(encoding="utf-8"))["tie_word_embeddings"])
     module = importlib.import_module(config.method.kernel_module)
     kernel = module.build(
@@ -392,7 +387,7 @@ def run(config: RunConfig, *, provenance=None):
         finished = time.perf_counter()
         finished_at = datetime.now(timezone.utc)
         timing = {
-            "protocol": "mergebench-4.3-wall-clock-v1",
+            "protocol": "fusioneval-wall-clock-v1",
             "started_at_utc": started_at.isoformat(),
             "finished_at_utc": finished_at.isoformat(),
             "preparation_seconds": preparation_done - started,

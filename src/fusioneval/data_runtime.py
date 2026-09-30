@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .assets import missing_hint
 
 import json
 from dataclasses import dataclass
@@ -269,7 +270,7 @@ def load_model(path: Path, device: str, precision: str, gradients: bool = False)
     import torch
     from transformers import AutoModelForCausalLM
 
-    dtype = torch.bfloat16 if precision == "mergebench" else torch.float32
+    dtype = torch.bfloat16 if precision == "bfloat16" else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         str(path), dtype=dtype, low_cpu_mem_usage=True, trust_remote_code=False
     )
@@ -307,7 +308,7 @@ def data_inventory(paths: Sequence[Path]) -> List[Dict[str, Any]]:
     result = []
     for path in paths:
         if not path.is_file():
-            raise CheckpointError("calibration data does not exist: {}".format(path))
+            raise CheckpointError("calibration data does not exist: {}. {}".format(path, missing_hint(path)))
         rows = 0
         with path.open("rb") as stream:
             for _ in stream:

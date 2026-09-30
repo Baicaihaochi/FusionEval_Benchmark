@@ -97,7 +97,7 @@ def execute(config: RunConfig, workspace: Path) -> DataResult:
     group_count = max(groups.values()) + 1
     roots = [config.base] + [item.path for item in config.experts]
     maps = [read_map(root) for root in roots]
-    compute_dtype = torch.bfloat16 if precision(config) == "mergebench" else torch.float32
+    compute_dtype = torch.bfloat16 if precision(config) == "bfloat16" else torch.float32
     with ExitStack() as stack:
         opened = [open_model(stack, root, mapping) for root, mapping in zip(roots, maps)]
         deltas = []

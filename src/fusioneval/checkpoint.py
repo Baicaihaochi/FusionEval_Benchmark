@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .assets import missing_hint
 
 import json
 from pathlib import Path
@@ -24,7 +25,7 @@ def _read_json(path: Path) -> Dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise CheckpointError("missing {}".format(path)) from exc
+        raise CheckpointError("missing {}. {}".format(path, missing_hint(path))) from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise CheckpointError("cannot read JSON {}: {}".format(path, exc)) from exc
     if not isinstance(value, dict):
@@ -86,10 +87,8 @@ def _metadata_identity(root: Path) -> Dict[str, Any]:
 
 def _checkpoint_member(root: Path, name: str) -> Path:
     result = (root / name).resolve()
-    try:
-        result.relative_to(root.resolve())
-    except ValueError as exc:
-        raise CheckpointError("checkpoint index references a path outside its directory") from exc
+    if not result.is_relative_to(root.resolve()):
+        raise CheckpointError("checkpoint index references a path outside its directory")
     return result
 
 def _weight_map(root: Path) -> Dict[str, str]:
@@ -128,8 +127,6 @@ def _schema(root: Path, mapping: Mapping[str, str]) -> Dict[str, Tuple[Tuple[int
                 for key in sorted(shard_keys):
                     view = handle.get_slice(key)
                     result[key] = (tuple(view.get_shape()), str(view.get_dtype()))
-        except CheckpointError:
-            raise
         except (OSError, SafetensorError) as exc:
             raise CheckpointError("cannot read safetensors header {}: {}".format(shard_path, exc)) from exc
     return result
@@ -153,7 +150,7 @@ def inspect_checkpoints(config: RunConfig) -> Dict[str, Any]:
     reference_architecture = reference_schema = reference_metadata = None
     for source_id, root in sources:
         if not root.is_dir():
-            raise CheckpointError("checkpoint directory does not exist: {}".format(root))
+            raise CheckpointError("checkpoint directory does not exist: {}. {}".format(root, missing_hint(root)))
         architecture = _architecture(root, config.model_profile)
         mapping = _weight_map(root)
         expected_files = set(mapping.values())

@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 import yaml
 from .config import _SLUG, _mapping, _overlap, _read_yaml, _resolve, normalize_runtime, load_config
-from .continual_rng import expected_generator_device, read_stage_rng, sha256_of_state
 from .engine import run as run_method
 from .errors import ConfigError, ExecutionError
+from .assets import model_path, data_path
+from .outputs import output_path
 from .methods.fields import choice, optional_bool, optional_mapping, parameters as exact_parameters, positive_int, scale, unit_interval
 from .model_profile import load_model_profile
-_RUN_KEYS = {'schema_version', 'common', 'method', 'parameters', 'order', 'output', 'data'}
-_COMMON_KEYS = {'schema_version', 'model_profile', 'base', 'experts', 'order', 'initial', 'output_root', 'runtime'}
+_RUN_KEYS = {'schema_version', 'common', 'method', 'parameters', 'order', 'output', 'data', 'log'}
+_COMMON_KEYS = {'schema_version', 'model_profile', 'base', 'experts', 'order', 'initial', 'initial_experts', 'output_root', 'runtime'}
 _METHODS = {'recursive_average', 'regmean', 'task_arithmetic', 'ties', 'della'}
 _TWO_INPUT_METHODS = {'ties', 'della'}
 _PLAN_ONLY_METHODS = frozenset()
@@ -23,7 +24,7 @@ _STAGE_PROTOCOL = 'fusioneval-continual-stage-v2'
 _RECURSIVE_AVERAGE_DIVISOR = 2
 _RECURSIVE_AVERAGE_EXPECTED = (1.0 / 16, 1.0 / 16, 1.0 / 8, 1.0 / 4, 1.0 / 2)
 _EXPECTED_INITIAL_EXPERTS = 5
-_STATISTICS_METHODS = {'regmean'}
+_DATA_METHODS = {'regmean'}
 
 @dataclass(frozen=True)
 class ContinualExpert:
@@ -41,10 +42,12 @@ class ContinualConfig:
     output_root: Path
     base: Path
     initial_id: str
+    initial_experts: int
     experts: Tuple[ContinualExpert, ...]
     order: Tuple[str, ...]
     runtime: Dict[str, Any]
     model_profile_path: Path
+    log: Optional[Path] = None
 
     @property
     def run_root(self) -> Path:
@@ -62,14 +65,19 @@ def _path_string(value: Any, location: str) -> str:
 def load_continual_config(path: Path) -> ContinualConfig:
     path = path.resolve()
     raw = _read_yaml(path, 'continual run config')
-    extra = set(raw) - _RUN_KEYS
+    extra = set(raw) - (_RUN_KEYS | _COMMON_KEYS | {"workflow"})
     if extra:
         raise ConfigError('unsupported continual run key(s): {}'.format(', '.join(sorted(extra))))
     if raw.get('schema_version') != 1:
         raise ConfigError('continual run schema_version must be 1')
-    common_value = _path_string(raw.get('common'), 'continual common')
-    common_path = _resolve(common_value, path.parent)
-    common = _read_yaml(common_path, 'continual common config')
+    if raw.get('common') is None:
+        common_path = path
+        common = {key: value for key, value in raw.items() if key in _COMMON_KEYS}
+    else:
+        if (set(raw) & (_COMMON_KEYS - _RUN_KEYS)):
+            raise ConfigError('use either inline inputs or common, not both')
+        common_path = _resolve(_path_string(raw['common'], 'continual common'), path.parent)
+        common = _read_yaml(common_path, 'continual common config')
     common_extra = set(common) - _COMMON_KEYS
     if common_extra:
         raise ConfigError('unsupported continual common key(s): {}'.format(', '.join(sorted(common_extra))))
@@ -113,10 +121,9 @@ def load_continual_config(path: Path) -> ContinualConfig:
     else:
         value = exact_parameters(raw.get('parameters', {}), ('scale',))
         configured = {'scale': scale(value['scale'])}
-    output_name = raw.get('output')
-    if not isinstance(output_name, str) or not _SLUG.fullmatch(output_name):
-        raise ConfigError('continual output must be a short path-safe slot name')
-    base = _resolve(_path_string(common.get('base'), 'continual common.base'), common_path.parent)
+    profile_path = _resolve(_path_string(common.get('model_profile'), 'continual common.model_profile'), common_path.parent)
+    profile = load_model_profile(profile_path)
+    base = _resolve(_path_string(common.get('base') or model_path(profile, 'base'), 'continual common.base'), common_path.parent)
     experts_raw = common.get('experts')
     if not isinstance(experts_raw, list) or not experts_raw:
         raise ConfigError('continual common.experts must be a non-empty list')
@@ -132,7 +139,7 @@ def load_continual_config(path: Path) -> ContinualConfig:
             raise ConfigError('each continual expert id must be a short path-safe slug')
         if expert_id in seen_ids:
             raise ConfigError('duplicate continual expert id: {}'.format(expert_id))
-        expert_path = _resolve(_path_string(item.get('path'), 'continual expert path'), common_path.parent)
+        expert_path = _resolve(_path_string(item.get('path') or model_path(profile, expert_id), 'continual expert path'), common_path.parent)
         seen_ids.add(expert_id)
         experts.append(ContinualExpert(expert_id, expert_path))
     initial_id = common.get('initial')
@@ -140,11 +147,12 @@ def load_continual_config(path: Path) -> ContinualConfig:
         raise ConfigError('continual common.initial must name the expert that provides M0; every method starts from the complete initial expert and fuses only the later arrivals')
     if initial_id not in seen_ids:
         raise ConfigError('continual common.initial must name one of the declared experts')
-    if method in _STATISTICS_METHODS:
-        data_raw = _mapping(raw.get('data'), 'continual {} data'.format(method))
-        if set(data_raw) != seen_ids:
-            raise ConfigError('continual {} data must contain every expert id exactly once'.format(method))
-        experts = [ContinualExpert(item.id, item.path, _resolve(_path_string(data_raw[item.id], 'continual {} data.{}'.format(method, item.id)), path.parent)) for item in experts]
+    if method in _DATA_METHODS:
+        arrivals = seen_ids - {initial_id}
+        data_raw = _mapping(raw.get('data') if raw.get('data') is not None else {key: data_path(key) for key in arrivals}, 'continual {} data'.format(method))
+        if not arrivals <= set(data_raw) or set(data_raw) - seen_ids:
+            raise ConfigError('continual {} data must contain each arriving expert; initial data is unused'.format(method))
+        experts = [ContinualExpert(item.id, item.path, None if item.id == initial_id else _resolve(_path_string(data_raw[item.id] or data_path(item.id), 'continual {} data.{}'.format(method, item.id)), path.parent)) for item in experts]
     elif 'data' in raw:
         raise ConfigError('continual data is only supported by Fisher and RegMean')
     order_raw = raw.get('order', common.get('order'))
@@ -154,27 +162,27 @@ def load_continual_config(path: Path) -> ContinualConfig:
     arrivals = seen_ids - {initial_id}
     if len(order) != len(arrivals) or len(set(order)) != len(order) or set(order) != arrivals:
         raise ConfigError('continual order must list every non-initial expert exactly once; the initial expert is Stage 0 and must not appear in the arrival order')
+    initial_experts = positive_int(common.get('initial_experts', 1), 'initial_experts')
     source_paths = [base] + [item.path for item in experts]
     if len(set(source_paths)) != len(source_paths):
         raise ConfigError('continual base and expert checkpoint paths must be distinct')
-    output_root = _resolve(_path_string(common.get('output_root'), 'continual common.output_root'), common_path.parent)
-    run_root = output_root / output_name
+    run_root = output_path(common.get('output_root'), raw.get('output'), common_path.parent,
+                           profile.name, method, initial_experts + len(order), configured, continual=True)
+    output_root, output_name = run_root.parent, run_root.name
     if any((_overlap(run_root, source) for source in source_paths)):
         raise ConfigError('continual output must not overlap a source checkpoint')
-    profile_path = _resolve(_path_string(common.get('model_profile'), 'continual common.model_profile'), common_path.parent)
-    load_model_profile(profile_path)
     runtime = normalize_runtime(common.get('runtime', {}), 'continual common.runtime')
     if method in {'dare', 'della'}:
         declared_runtime = common.get('runtime', {})
         if 'seed' in declared_runtime and runtime['seed'] != configured['seed']:
             raise ConfigError('continual runtime.seed conflicts with method.parameters.seed')
         runtime['seed'] = configured['seed']
-    return ContinualConfig(path=path, common_path=common_path, method=method, parameters=configured, output_name=output_name, output_root=output_root, base=base, initial_id=initial_id, experts=tuple(experts), order=order, runtime=runtime, model_profile_path=profile_path)
+    return ContinualConfig(path=path, common_path=common_path, method=method, parameters=configured, output_name=output_name, output_root=output_root, base=base, initial_id=initial_id, initial_experts=initial_experts, experts=tuple(experts), order=order, runtime=runtime, model_profile_path=profile_path, log=_resolve(raw["log"], path.parent) if raw.get("log") else None)
 
 def _stage_operation(config: ContinualConfig, stage: int) -> Tuple[str, Dict[str, Any]]:
     if stage < 1:
         raise ConfigError('updates start at 1 (Stage 0 is the initial expert)')
-    experts_included = stage + 1
+    experts_included = config.initial_experts + stage
     if config.method == 'recursive_average':
         return ('online_average', {'seen_count': _RECURSIVE_AVERAGE_DIVISOR})
     if config.method == 'regmean':
@@ -182,13 +190,8 @@ def _stage_operation(config: ContinualConfig, stage: int) -> Tuple[str, Dict[str
     if config.method == 'ties':
         return ('continual_ties', {'density': config.parameters['density'], 'scale': config.parameters['scale'], 'merge_func': config.parameters['merge_func'], 'exclude_edge': config.parameters['exclude_edge'], 'experts_included': experts_included, 'participant_count': 2})
     if config.method == 'della':
-        return ('continual_della', {'drop_rate': config.parameters['drop_rate'], 'window': config.parameters['window'], 'scale': config.parameters['scale'], 'seed': config.parameters['seed'], 'exclude_edge': config.parameters['exclude_edge'], 'experts_included': experts_included, 'participant_count': 2})
+        return ('continual_della', {'drop_rate': config.parameters['drop_rate'], 'window': config.parameters['window'], 'scale': config.parameters['scale'], 'seed': (config.parameters['seed'] + config.initial_experts + stage - 2) % (2**63), 'exclude_edge': config.parameters['exclude_edge'], 'experts_included': experts_included, 'participant_count': 2})
     return ('continual_task_arithmetic', {'scale': config.parameters['scale'], 'experts_included': experts_included})
-
-def _initial_operation(config: ContinualConfig) -> Tuple[str, Dict[str, Any]]:
-    if config.method == 'regmean':
-        return ('continual_regmean', {'alpha': config.parameters['alpha'], 'examples': config.parameters['examples'], 'leftover_edge': config.parameters['leftover_edge'], 'leftover_1d': config.parameters['leftover_1d'], 'experts_included': 1})
-    raise ConfigError('method {} has no stage-0 computation: Stage 0 is the initial expert itself'.format(config.method))
 
 def _effective_expert_weights(config: ContinualConfig) -> Optional[Dict[str, Any]]:
     ids = [config.initial_id] + list(config.order)
@@ -221,39 +224,32 @@ def _effective_expert_weights(config: ContinualConfig) -> Optional[Dict[str, Any
 def compile_continual_plan(config: ContinualConfig) -> Dict[str, Any]:
     by_id = {item.id: item for item in config.experts}
     initial = config.initial
-    statistics_method = config.method in _STATISTICS_METHODS
-    if statistics_method:
-        operation, initial_parameters = _initial_operation(config)
-        initial_source_roles = {'incoming': str(initial.path), 'incoming_data': str(initial.data)}
-        initial_formula = 'theta_0=theta_initial (weights unmodified); statistics initialised on the initial expert; no fusion, no scaling, no solve'
-    else:
-        operation = 'initial_expert'
-        initial_parameters = None
-        initial_source_roles = {'incoming': str(initial.path)}
-        initial_formula = 'theta_0=theta_initial; M0 is the initial expert itself'
-    initial_block = {'observation': 0, 'domain': initial.id, 'kind': 'statistics_initialisation' if statistics_method else 'initial_expert', 'operation': operation, 'executes': statistics_method, 'model': str(initial.path), 'output': str(config.run_root / 'stages' / 's00'), 'formula': initial_formula, 'weights': 'verbatim copy of the initial expert weights' if statistics_method else 'not materialised: the initial expert checkpoint is used in place', 'source_roles': initial_source_roles}
-    if initial_parameters is not None:
-        initial_block['parameters'] = initial_parameters
-        initial_block['experts_included'] = 1
+    needs_data = config.method in _DATA_METHODS
+    initial_block = {'observation': 0, 'domain': initial.id, 'kind': 'initial_expert',
+                     'operation': 'initial_expert', 'executes': False, 'experts_included': config.initial_experts,
+                     'model': str(initial.path), 'output': str(config.run_root / 'stages' / 's00'),
+                     'formula': ('theta_0=theta_initial; no statistics collected' if needs_data else 'theta_0=theta_initial; M0 is the initial expert itself'),
+                     'weights': 'not materialised: the initial expert checkpoint is used in place',
+                     'source_roles': {'incoming': str(initial.path)}}
     stages = []
     for stage, expert_id in enumerate(config.order, 1):
         incoming = by_id[expert_id]
         operation, method_parameters = _stage_operation(config, stage)
         output = config.run_root / 'stages' / 's{:02d}'.format(stage)
         if stage == 1:
-            previous = config.run_root / 'stages' / 's00' if statistics_method else initial.path
+            previous = initial.path
         else:
             previous = config.run_root / 'stages' / 's{:02d}'.format(stage - 1)
         source_roles = {'previous': str(previous), 'incoming': str(incoming.path)}
-        if statistics_method:
+        if needs_data:
             if incoming.data is None:
                 raise ConfigError('continual {} expert has no calibration data'.format(config.method))
             source_roles['incoming_data'] = str(incoming.data)
         if config.method in {'task_arithmetic'} | _TWO_INPUT_METHODS:
             source_roles['immutable_anchor'] = str(config.base)
-        stages.append({'stage': stage, 'domain': expert_id, 'operation': operation, 'experts_included': stage + 1, 'parameters': method_parameters, 'source_roles': source_roles, 'output': str(output)})
+        stages.append({'stage': stage, 'domain': expert_id, 'operation': operation, 'experts_included': config.initial_experts + stage, 'parameters': method_parameters, 'source_roles': source_roles, 'output': str(output)})
     if config.method == 'regmean':
-        formula = 'theta_t=solve(shrunk(G_prev)+shrunk(G_in),shrunk(G_prev)@theta_prev+shrunk(G_in)@theta_in);shrunk(G)=alpha*G+(1-alpha)*diag(G); experts_included=t+1'
+        formula = 'G_prev and G_in are recomputed on incoming data only; theta_t=solve(shrunk(G_prev)+shrunk(G_in),shrunk(G_prev)@theta_prev+shrunk(G_in)@theta_in); shrunk(G)=alpha*G+(1-alpha)*diag(G); no cumulative statistics; uncovered floating weights use pairwise mean'
     elif config.method == 'recursive_average':
         formula = 'theta_0=theta_initial; theta_t=0.5*theta_prev+0.5*theta_incoming for t=1..4'
     elif config.method == 'ties':
@@ -263,14 +259,22 @@ def compile_continual_plan(config: ContinualConfig) -> Dict[str, Any]:
     else:
         formula = 'theta_0=theta_initial; theta_t=theta_prev+scale*(theta_incoming-theta_anchor) for t=1..4'
     plan = {'schema_version': 1, 'protocol': _EXTENSION_PROTOCOL if config.method in _TWO_INPUT_METHODS else _SEQUENCE_PROTOCOL, 'numbering': 'section0-observation-0..4', 'method': config.method, 'parameters': config.parameters, 'formula': formula, 'initial': initial_block, 'common_anchor': str(config.base), 'order': list(config.order), 'expert_paths': {item.id: str(item.path) for item in config.experts}, 'model_profile': str(config.model_profile_path), 'runtime': config.runtime, 'observation_points': len(config.order) + 1, 'updates': len(config.order), 'effective_expert_weights': _effective_expert_weights(config), 'access_contract': {'historical_expert_checkpoints': False, 'previous_merged_checkpoint': True, 'incoming_expert_checkpoint': True, 'initial_expert_checkpoint': True, 'stage_0_is_not_an_update': True, 'immutable_common_anchor': config.method in {'task_arithmetic'} | _TWO_INPUT_METHODS}, 'stages': stages, 'output': str(config.run_root), 'config': str(config.path), 'common_config': str(config.common_path)}
+    plan['initial_experts'] = config.initial_experts
+    plan['total_experts'] = config.initial_experts + len(config.order)
     if config.method in _TWO_INPUT_METHODS:
         plan_only = config.method in _PLAN_ONLY_METHODS
-        plan['execution'] = {'ready': not plan_only, 'status': 'PLAN_ONLY' if plan_only else 'READY', 'runner': 'fusioneval.methods.continual_{}.kernel'.format(config.method), 'input_mode': 'experts', 'reason': 'continual runner and atomic RNG/resume support are not implemented' if plan_only else 'runner, atomic RNG persistence and numerical/resume verification are implemented; Stage 0 stays the initial expert and every fusion is anchored on the immutable common base'}
+        plan['execution'] = {'ready': not plan_only, 'status': 'PLAN_ONLY' if plan_only else 'READY', 'runner': 'fusioneval.methods.continual_{}.kernel'.format(config.method), 'input_mode': 'experts', 'reason': 'continual runner and atomic RNG/resume support are not implemented' if plan_only else 'Stage 0 references the initial expert; each update uses the current model, incoming expert and fixed base'}
         if config.method in _RNG_METHODS:
-            plan['rng_contract'] = {'initial_seed': config.runtime['seed'], 'state_device': expected_generator_device('continual_{}'.format(config.method), config.runtime['device']), 'state_location': 'stage manifest diagnostics.rng (atomic stage directory)', 'state_hash': 'sha256 of the raw torch.Generator state blob', 'continuation': 'previous-stage atomic RNG state; never reset per stage', 'seeded_once_at': 'Stage 1', 'implemented': not plan_only}
-    if statistics_method:
-        plan['expert_data'] = {item.id: str(item.data) for item in config.experts}
-        plan['access_contract'].update({'calibration_data': True, 'initial_statistics': True, 'previous_cumulative_state': True})
+            plan['protocol'] = 'fusioneval-continual-della-stage-seed-v1'
+            plan['rng_contract'] = {'base_seed': config.runtime['seed'],
+                                    'stage_seed': '(base_seed + initial_experts + stage - 2) % 2**63',
+                                    'historical_rng_state': False}
+    if needs_data:
+        plan['protocol'] = 'fusioneval-continual-regmean-pairwise-v1'
+        plan['numbering'] = 'initial=0; updates=1..N-1'
+        plan['common_anchor'] = None
+        plan['expert_data'] = {item.id: str(item.data) for item in config.experts if item.data is not None}
+        plan['access_contract'].update({'calibration_data': 'incoming_domain_only_for_both_models', 'initial_statistics': False, 'previous_cumulative_state': False, 'historical_calibration_data': False})
     return plan
 
 def _atomic_text(path: Path, text: str) -> None:
@@ -299,26 +303,16 @@ def _generated_stage_configs(config: ContinualConfig, stage_plan: Mapping[str, A
         experts = [{'id': 'anchor', 'path': roles['immutable_anchor']}, {'id': 'incoming', 'path': roles['incoming']}]
     else:
         incoming = {'id': 'incoming', 'path': roles['incoming']}
-        if config.method in _STATISTICS_METHODS:
+        if config.method in _DATA_METHODS:
             incoming['data'] = roles['incoming_data']
         experts = [incoming]
     common = {'schema_version': 1, 'model_profile': str(config.model_profile_path), 'base': roles['immutable_anchor'] if config.method in _TWO_INPUT_METHODS else roles['previous'], 'experts': experts, 'output_root': str(config.run_root / 'stages'), 'runtime': {**config.runtime, **dict(runtime_extra or {})}}
-    run = {'schema_version': 1, 'common': 's{:02d}.common.yaml'.format(stage), 'method': stage_plan['operation'], 'parameters': stage_plan['parameters'], 'output': 's{:02d}'.format(stage)}
+    run = {'schema_version': 1, 'common': 's{:02d}.common.yaml'.format(stage), 'method': stage_plan['operation'], 'parameters': stage_plan['parameters'], 'output': str(config.run_root / 'stages' / 's{:02d}'.format(stage))}
     return (common, run)
-
-def _generated_initial_configs(config: ContinualConfig, initial_block: Mapping[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    roles = initial_block['source_roles']
-    common = {'schema_version': 1, 'model_profile': str(config.model_profile_path), 'base': str(config.base), 'initial_model': roles['incoming'], 'experts': [{'id': 'incoming', 'path': roles['incoming'], 'data': roles['incoming_data']}], 'output_root': str(config.run_root / 'stages'), 'runtime': config.runtime}
-    run = {'schema_version': 1, 'common': 's00.common.yaml', 'method': initial_block['operation'], 'parameters': initial_block['parameters'], 'output': 's00'}
-    return (common, run)
-
-def _initial_stage_plan(plan: Mapping[str, Any]) -> Dict[str, Any]:
-    block = plan['initial']
-    return {'stage': 0, 'domain': block['domain'], 'operation': block['operation'], 'experts_included': 1, 'parameters': block['parameters'], 'source_roles': block['source_roles'], 'output': block['output'], 'model': block['model'], 'executes': True}
 
 def _pointer_stage0_receipt(plan: Mapping[str, Any]) -> Dict[str, Any]:
     block = plan['initial']
-    return {'schema_version': 1, 'status': 'PASS', 'stage': 0, 'domain': block['domain'], 'operation': 'initial_expert', 'executes': False, 'experts_included': 1, 'model': block['model'], 'output': block['output'], 'weights': block['weights'], 'formula': block['formula'], 'algorithm_runtime_seconds': 0.0}
+    return {'schema_version': 1, 'status': 'PASS', 'stage': 0, 'domain': block['domain'], 'operation': 'initial_expert', 'executes': False, 'experts_included': block['experts_included'], 'model': block['model'], 'output': block['output'], 'weights': block['weights'], 'formula': block['formula'], 'algorithm_runtime_seconds': 0.0}
 
 def _write_pointer_stage0(plan: Mapping[str, Any]) -> Dict[str, Any]:
     receipt = _pointer_stage0_receipt(plan)
@@ -417,44 +411,6 @@ def _same_fixed_contract(left: Mapping[str, Any], right: Mapping[str, Any]) -> b
     mutable = {'order', 'stages', 'config', 'common_config', 'effective_expert_weights'}
     return {key: value for key, value in left.items() if key not in mutable} == {key: value for key, value in right.items() if key not in mutable}
 
-def _stage_rng_runtime(config: ContinualConfig, previous_payload: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-    if config.method not in _RNG_METHODS:
-        return {}
-    if previous_payload is None:
-        return {'rng_state': None}
-    return {'rng_state': previous_payload['state_hex']}
-
-def _stage_rng_payload(config: ContinualConfig, output: Path, stage: int, input_state: Optional[str]) -> Mapping[str, Any]:
-    payload = read_stage_rng(output / 'fusioneval_manifest.json', method='continual_{}'.format(config.method), expected_device=expected_generator_device('continual_{}'.format(config.method), config.runtime['device']), stage=stage)
-    if int(payload.get('initial_seed', -1)) != int(config.runtime['seed']):
-        raise ExecutionError('stage {} RNG state was seeded with {} instead of the configured {}'.format(stage, payload.get('initial_seed'), config.runtime['seed']))
-    expected_input = sha256_of_state(input_state) if input_state is not None else None
-    if payload.get('input_state_sha256') != expected_input:
-        raise ExecutionError('stage {} consumed a different random stream than the one this run supplied; the stage config and the manifest disagree'.format(stage))
-    if bool(payload.get('seeded_fresh')) != (input_state is None):
-        raise ExecutionError('stage {} RNG provenance is inconsistent: seeded_fresh={} with input_state={}'.format(stage, payload.get('seeded_fresh'), input_state is not None))
-    if input_state is not None and payload['state_hex'] == input_state:
-        raise ExecutionError('stage {} did not advance the random stream; a stage must consume draws rather than reuse the incoming state'.format(stage))
-    return payload
-
-def _run_initial_stage(config: ContinualConfig, plan: Mapping[str, Any], config_root: Path) -> Dict[str, Any]:
-    stage_plan = _initial_stage_plan(plan)
-    output = Path(stage_plan['output'])
-    common_value, run_value = _generated_initial_configs(config, plan['initial'])
-    common_path = config_root / 's00.common.yaml'
-    run_path = config_root / 's00.run.yaml'
-    _write_stage_yaml(common_path, common_value, completed=output.exists())
-    _write_stage_yaml(run_path, run_value, completed=output.exists())
-    if output.exists():
-        receipt = _load_stage_receipt(output, stage_plan)
-        disposition = 'REUSED'
-    else:
-        stage_manifest = run_method(load_config(run_path), provenance={'protocol': _STAGE_PROTOCOL, 'stage_plan': dict(stage_plan)})
-        receipt = _receipt_from_manifest(output, stage_plan, stage_manifest)
-        _atomic_json(output / 'continual_stage.json', receipt)
-        disposition = 'CREATED'
-    return {**receipt, 'disposition': disposition}
-
 def run_continual(config: ContinualConfig, *, resume: bool=False, stop_after: Optional[int]=None) -> Dict[str, Any]:
     if config.method in _PLAN_ONLY_METHODS:
         raise ConfigError('continual {} is plan-only: runner and atomic RNG/resume support are not implemented; use --dry-run (no output directories were created)'.format(config.method))
@@ -503,18 +459,14 @@ def run_continual(config: ContinualConfig, *, resume: bool=False, stop_after: Op
     active_stage = None
     try:
         config_root = run_root / 'configs'
-        if plan['initial']['executes']:
-            initial_receipt = _run_initial_stage(config, plan, config_root)
-        else:
-            initial_receipt = {**_write_pointer_stage0(plan), 'disposition': 'REFERENCED'}
+        initial_receipt = {**_write_pointer_stage0(plan), 'disposition': 'REFERENCED'}
         state['initial'] = initial_receipt
         _atomic_json(manifest_path, state)
-        rng_previous: Optional[Mapping[str, Any]] = None
         for stage_plan in plan['stages'][:stop_after]:
             stage = int(stage_plan['stage'])
             active_stage = stage
             output = Path(stage_plan['output'])
-            runtime_extra = _stage_rng_runtime(config, rng_previous)
+            runtime_extra = {'seed': stage_plan['parameters']['seed'], 'rng_state': None} if config.method in _RNG_METHODS else {}
             common_value, run_value = _generated_stage_configs(config, stage_plan, runtime_extra)
             common_path = config_root / 's{:02d}.common.yaml'.format(stage)
             run_path = config_root / 's{:02d}.run.yaml'.format(stage)
@@ -528,9 +480,7 @@ def run_continual(config: ContinualConfig, *, resume: bool=False, stop_after: Op
                 receipt = _receipt_from_manifest(output, stage_plan, stage_manifest)
                 _atomic_json(output / 'continual_stage.json', receipt)
                 disposition = 'CREATED'
-            if config.method in _RNG_METHODS:
-                rng_previous = _stage_rng_payload(config, output, stage, runtime_extra.get('rng_state'))
-            receipts.append({**receipt, 'disposition': disposition, **({'rng_state_sha256': rng_previous['state_sha256']} if config.method in _RNG_METHODS else {})})
+            receipts.append({**receipt, 'disposition': disposition})
             state['completed_stages'] = receipts
             _atomic_json(manifest_path, state)
     except Exception as exc:

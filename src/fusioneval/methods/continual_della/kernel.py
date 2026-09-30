@@ -1,5 +1,4 @@
-from ...continual_rng import TRAVERSAL, encode_rng_state, restore_generator_state
-from ...continual_sparse import TwoInputDeltaView, delta_block
+from ...continual_sparse import delta_block
 from ...kernels import Kernel
 from .._continual_sparse import DELLA_PARAMETERS, encode_by_name
 from ..della.kernel import build as della_build
@@ -20,10 +19,8 @@ class ContinualDELLA(Kernel):
                     self.initial_seed, shared.seed
                 )
             )
-        self.input_state = shared.rng_state
-        self.seeded_fresh = shared.rng_state is None
-        if not self.seeded_fresh:
-            restore_generator_state(self.inner.generator, shared.rng_state)
+        if shared.rng_state is not None:
+            raise ValueError("continual DELLA uses a stage seed; historical RNG state is unsupported")
         self.experts_included = int(value["experts_included"])
         self.participant_count = int(value["participant_count"])
 
@@ -44,15 +41,8 @@ class ContinualDELLA(Kernel):
             participant_roles=["previous_accumulated", "incoming"],
             experts_included=self.experts_included,
         )
-        value["rng"] = encode_rng_state(
-            self.inner.generator,
-            method=self.name,
-            device=str(self.inner.generator.device),
-            initial_seed=self.initial_seed,
-            seeded_fresh=self.seeded_fresh,
-            input_state=self.input_state,
-            traversal=TRAVERSAL[self.name],
-        )
+        value["rng"] = {"policy": "independent_stage_seed", "seed": self.initial_seed,
+                        "historical_state_loaded": False}
         return value
 
 def build(parameters, shared):

@@ -30,7 +30,7 @@ PLUGIN = MethodPlugin(
     name="dare", aliases=(), op_code="o04", contract_version=1,
     requirements=KernelRequirements("flat", "global", 2, True, stochastic=True),
     parameter_scope="all_floating", aggregation="task_vector_sum",
-    contract_tags=("paper_standard", "mergebench_numeric_compat", "decoder_full_edge_extension"),
+    contract_tags=("paper_standard", "reference_numeric_compat", "decoder_full_edge_extension"),
     user_parameters=("drop_rate", "scale", "exclude_edge", "leftover_edge"),
     runtime_parameters=("drop_rate", "scale", "exclude_edge", "leftover_edge"),
     normalize=normalize, contractualize=contract,

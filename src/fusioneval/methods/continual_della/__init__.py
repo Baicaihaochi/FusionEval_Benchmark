@@ -39,7 +39,7 @@ PLUGIN = MethodPlugin(
     aliases=(),
     op_code="c06",
 
-    contract_version=1,
+    contract_version=2,
     requirements=KernelRequirements("full_rows", "none", 1, False, stochastic=True),
     parameter_scope="all_floating",
     aggregation="recursive_fixed-anchor_disjoint_mean",

@@ -1,0 +1,41 @@
+# Starting parameters adapted from Qwen templates; not tuned for Llama.
+# Five experts; null inputs use repository models/ and data/ defaults.
+# Edit this file only. Explicit relative paths resolve from this file.
+# Prepare a five-expert TA model at models/llama3.2-3b/initial, or set initial_model to its output.
+schema_version: 1
+workflow: fusion
+method: surgery
+parameters:
+  rank: 16
+  steps: 250
+  learning_rate: 6.0e-05
+  examples: 128
+  prefill_chunk_size: 256
+  feature_cache: cpu
+model_profile: ../../configs/models/llama3.2-3b.yaml
+base: null
+experts:
+- id: math
+  path: null
+  data: null
+- id: code
+  path: null
+  data: null
+- id: agent
+  path: null
+  data: null
+- id: if
+  path: null
+  data: null
+- id: science
+  path: null
+  data: null
+runtime:
+  device: cuda
+  precision: bfloat16
+  save_dtype: bfloat16
+  seed: 42
+  max_shard_size_gib: 5
+initial_model: ../../models/llama3.2-3b/initial
+output: null
+log: null

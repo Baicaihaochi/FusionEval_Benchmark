@@ -1,0 +1,16 @@
+schema_version: 1
+name: qwen3-8b
+architecture:
+  model_type: qwen3
+  vocab_size: 151936
+  hidden_size: 4096
+  intermediate_size: 12288
+  num_hidden_layers: 36
+  num_attention_heads: 32
+  num_key_value_heads: 8
+  head_dim: 128
+  tie_word_embeddings: false
+decoder:
+  layer_prefix: model.layers
+  attention_modules: [q_proj, k_proj, v_proj, o_proj]
+  mlp_modules: [gate_proj, up_proj, down_proj]

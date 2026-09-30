@@ -1,0 +1,37 @@
+# Five experts: IF -> Math -> Science -> Code -> Agent.
+schema_version: 1
+workflow: continual
+method: della
+parameters:
+  drop_rate: 0.1
+  window: 0.14
+  scale: 1.0
+  seed: 42
+  exclude_edge: false
+model_profile: ../../../configs/models/qwen3-4b.yaml
+base: null
+initial: if
+experts:
+- id: math
+  path: null
+- id: code
+  path: null
+- id: agent
+  path: null
+- id: if
+  path: null
+- id: science
+  path: null
+order:
+- math
+- science
+- code
+- agent
+runtime:
+  device: cuda
+  precision: bfloat16
+  save_dtype: source
+  max_shard_size_gib: 5
+  seed: 42
+output: null
+log: null

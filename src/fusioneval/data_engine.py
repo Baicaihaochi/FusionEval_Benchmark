@@ -38,10 +38,8 @@ def _publish_artifacts(result: DataResult, workspace: Path, staging: Path) -> Di
         if destination.is_absolute() or ".." in destination.parts or not destination.parts:
             raise CheckpointError("artifact destination must be a safe relative path")
         source = source.resolve()
-        try:
-            source.relative_to(workspace)
-        except ValueError as exc:
-            raise CheckpointError("runner artifact is outside its workspace") from exc
+        if not source.is_relative_to(workspace):
+            raise CheckpointError("runner artifact is outside its workspace")
         if not source.exists():
             raise CheckpointError("runner artifact does not exist: {}".format(source))
         target = staging / destination
@@ -138,7 +136,7 @@ def run(config: RunConfig, *, provenance=None):
         finished = time.perf_counter()
         finished_at = datetime.now(timezone.utc)
         timing = {
-            "protocol": "mergebench-4.3-wall-clock-v1",
+            "protocol": "fusioneval-wall-clock-v1",
             "started_at_utc": started_at.isoformat(),
             "finished_at_utc": finished_at.isoformat(),
             "preparation_seconds": preparation_done - started,

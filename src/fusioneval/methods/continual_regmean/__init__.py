@@ -8,7 +8,7 @@ def normalize(raw):
         raise ConfigError(
             "continual_regmean no longer accepts 'stage': pass 'experts_included' (the "
             "number of experts already included after this operation, i.e. t+1, with 1 "
-            "meaning the stage-0 statistics initialisation)."
+            "not supported: Stage 0 directly references the initial expert)."
         )
     raw = optional_mapping(
         raw, ("alpha", "examples", "leftover_edge", "leftover_1d", "experts_included")
@@ -16,6 +16,8 @@ def normalize(raw):
     missing = [name for name in ("alpha", "experts_included") if name not in raw]
     if missing:
         raise ConfigError("missing method parameter(s): {}".format(", ".join(missing)))
+    if positive_int(raw["experts_included"], "experts_included") < 2:
+        raise ConfigError("continual RegMean updates require at least two included experts; Stage 0 collects no statistics")
     return {
         "alpha": unit_interval(raw["alpha"], "alpha"),
         "examples": positive_int(raw["examples"], "examples") if "examples" in raw else 256,
@@ -36,13 +38,13 @@ PLUGIN = MethodPlugin(
     aliases=("recursive_regmean",),
     op_code="c04",
 
-    contract_version=2,
+    contract_version=3,
     requirements=KernelRequirements("full_rows", "none", 1, False),
-    parameter_scope="recursive_linear_weights_with_expert_mean_fallback",
-    aggregation="recursive_activation_gram_regression",
+    parameter_scope="pairwise_linear_weights_with_pairwise_mean_fallback",
+    aggregation="incoming_data_pairwise_activation_gram_regression",
     contract_tags=(
         "continual_standard",
-        "mergebench_numeric_compat",
+        "incoming_domain_pairwise",
         "decoder_full_edge_extension",
     ),
     user_parameters=("alpha", "examples", "leftover_edge", "leftover_1d", "experts_included"),

@@ -1,8 +1,13 @@
 .venv/
+.venv-*/
 __pycache__/
 *.pyc
-models/
-data/
-outputs/
+/models/*
+!/models/.gitkeep
+/data/*
+!/data/.gitkeep
+/outputs/*
+!/outputs/.gitkeep
 .cache/
 .DS_Store
+/.runtime/

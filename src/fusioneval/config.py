@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Mapping, Optional
 import yaml
 
 from .errors import ConfigError
+from .assets import model_path, data_path
+from .outputs import output_path
 from .methods.base import MethodContext, MethodPlugin
 from .model_profile import ModelProfile, load_model_profile
 from .registry import resolve_method, validate_parameters
@@ -35,8 +37,9 @@ class RunConfig:
     output: Path
     runtime: Dict[str, Any]
     model_profile: Optional[ModelProfile] = None
+    log: Optional[Path] = None
 
-_RUN_KEYS = {"schema_version", "common", "method", "parameters", "output"}
+_RUN_KEYS = {"schema_version", "common", "method", "parameters", "output", "log"}
 _COMMON_KEYS = {
     "schema_version", "base", "experts", "initial_model", "calibration_data",
     "output_root", "runtime", "model_profile"
@@ -46,7 +49,7 @@ _RUNTIME_DEFAULTS = {
     "save_dtype": "source",
     "max_shard_size_gib": 5,
     "seed": 42,
-    "precision": "mergebench",
+    "precision": "bfloat16",
 
     "rng_state": None,
 }
@@ -74,11 +77,7 @@ def _resolve(value: str, directory: Path) -> Path:
     return result.resolve()
 
 def _within(child: Path, parent: Path) -> bool:
-    try:
-        child.relative_to(parent)
-        return True
-    except ValueError:
-        return False
+    return child.is_relative_to(parent)
 
 def _overlap(left: Path, right: Path) -> bool:
     return _within(left, right) or _within(right, left)
@@ -106,8 +105,8 @@ def normalize_runtime(value: Any, location: str = "common.runtime") -> Dict[str,
         raise ConfigError(
             "{}.save_dtype must be source, bfloat16, float16, or float32".format(location)
         )
-    if runtime["precision"] not in ("mergebench", "float32"):
-        raise ConfigError("{}.precision must be mergebench or float32".format(location))
+    if runtime["precision"] not in ("bfloat16", "float32"):
+        raise ConfigError("{}.precision must be bfloat16 or float32".format(location))
     max_shard = _finite_number(
         runtime["max_shard_size_gib"], "{}.max_shard_size_gib".format(location)
     )
@@ -133,24 +132,40 @@ def normalize_runtime(value: Any, location: str = "common.runtime") -> Dict[str,
 def load_config(path: Path) -> RunConfig:
     path = path.resolve()
     raw = _read_yaml(path, "run config")
-    extra = set(raw) - _RUN_KEYS
+    extra = set(raw) - (_RUN_KEYS | _COMMON_KEYS | {"workflow"})
     if extra:
         raise ConfigError("unsupported run key(s): {}".format(", ".join(sorted(extra))))
     if raw.get("schema_version") != 1:
         raise ConfigError("run schema_version must be 1")
 
     common_value = raw.get("common")
-    if not isinstance(common_value, str) or not common_value:
-        raise ConfigError("common must reference a YAML file")
-    common_path = _resolve(common_value, path.parent)
-    common_raw = _read_yaml(common_path, "common config")
+    if common_value is None:
+        common_path = path
+        common_raw = {key: value for key, value in raw.items() if key in _COMMON_KEYS}
+    else:
+        if not isinstance(common_value, str) or not common_value:
+            raise ConfigError("common must reference a YAML file")
+        if (set(raw) & _COMMON_KEYS) - {"schema_version"}:
+            raise ConfigError("use either inline inputs or common, not both")
+        common_path = _resolve(common_value, path.parent)
+        common_raw = _read_yaml(common_path, "common config")
     common_extra = set(common_raw) - _COMMON_KEYS
     if common_extra:
         raise ConfigError("unsupported common key(s): {}".format(", ".join(sorted(common_extra))))
     if common_raw.get("schema_version") != 1:
         raise ConfigError("common schema_version must be 1")
 
-    base_value = common_raw.get("base")
+    profile_value = common_raw.get("model_profile")
+    if profile_value is not None and (not isinstance(profile_value, str) or not profile_value):
+        raise ConfigError("common.model_profile must reference a YAML file")
+    model_profile = (
+        load_model_profile(_resolve(profile_value, common_path.parent))
+        if profile_value is not None
+        else None
+    )
+
+    method = resolve_method(raw.get("method", ""))
+    base_value = common_raw.get("base") or model_path(model_profile, "base")
     if not isinstance(base_value, str) or not base_value:
         raise ConfigError("common.base must be a path string")
     base = _resolve(base_value, common_path.parent)
@@ -169,7 +184,11 @@ def load_config(path: Path) -> RunConfig:
             if item_extra:
                 raise ConfigError("unsupported expert key(s): {}".format(", ".join(sorted(item_extra))))
             expert_id, expert_value = item.get("id"), item.get("path")
-            data_value = item.get("data")
+            if expert_value in (None, "") and isinstance(expert_id, str) and _SLUG.fullmatch(expert_id):
+                expert_value = model_path(model_profile, expert_id)
+            data_value = item.get("data") or None
+            if not data_value and method.data_mode == "per_expert" and isinstance(expert_id, str) and _SLUG.fullmatch(expert_id):
+                data_value = data_path(expert_id)
         if not isinstance(expert_id, str) or not _SLUG.fullmatch(expert_id):
             raise ConfigError("each expert id must be a short path-safe slug")
         if expert_id in ids:
@@ -236,14 +255,12 @@ def load_config(path: Path) -> RunConfig:
         MethodContext(tuple(item.id for item in experts)),
     )
 
-    output_name = raw.get("output")
-    if not isinstance(output_name, str) or not _SLUG.fullmatch(output_name):
-        raise ConfigError("output must be a short path-safe slot name")
-    output_root_value = common_raw.get("output_root")
-    if not isinstance(output_root_value, str) or not output_root_value:
-        raise ConfigError("common.output_root must be a path string")
-    output_root = _resolve(output_root_value, common_path.parent)
-    output = output_root / output_name
+    output = output_path(
+        common_raw.get("output_root"), raw.get("output"), common_path.parent,
+        model_profile.name if model_profile else base.name,
+        method.name, len(experts), params,
+    )
+    output_name = output.name
     source_paths = [base] + [item.path for item in experts]
     if initial_model is not None:
         source_paths.append(initial_model)
@@ -252,14 +269,6 @@ def load_config(path: Path) -> RunConfig:
 
     runtime = normalize_runtime(common_raw.get("runtime", {}))
 
-    profile_value = common_raw.get("model_profile")
-    if profile_value is not None and (not isinstance(profile_value, str) or not profile_value):
-        raise ConfigError("common.model_profile must reference a YAML file")
-    model_profile = (
-        load_model_profile(_resolve(profile_value, common_path.parent))
-        if profile_value is not None
-        else None
-    )
 
     return RunConfig(
         path=path,
@@ -276,4 +285,5 @@ def load_config(path: Path) -> RunConfig:
         output=output,
         runtime=runtime,
         model_profile=model_profile,
+        log=_resolve(raw["log"], path.parent) if raw.get("log") else None,
     )

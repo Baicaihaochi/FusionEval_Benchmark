@@ -29,7 +29,7 @@ PLUGIN = MethodPlugin(
     aggregation="activation_gram_regression",
     contract_tags=(
         "paper_standard",
-        "mergebench_numeric_compat",
+        "reference_numeric_compat",
         "decoder_full_edge_extension",
     ),
     user_parameters=("alpha", "examples", "leftover_edge", "leftover_1d",

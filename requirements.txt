@@ -1,6 +1,16 @@
+# Fusion, calibration, continual fusion and explicit model/data downloads.
 numpy>=1.24,<3
 PyYAML>=6.0,<7
 safetensors>=0.4,<1
-torch>=2.1
+torch>=2.6,<3
 transformers==4.57.1
 huggingface_hub>=0.34,<1
+
+# Ray Jobs CLI for the distillation submission adapter.
+# Use the server's exact Ray version when submitting to an existing cluster.
+ray[default]>=2.40,<3
+psutil>=5.9,<8  # Cleanup only service processes started by this invocation.
+
+# Slime + Megatron + SGLang and their CUDA extensions are an external training
+# stack: install the matching Slime environment, not the unrelated PyPI "slime".
+# See README.md (Distillation). No evaluation runner is bundled here.

@@ -1,0 +1,13 @@
+Slime training source snapshot
+
+Base checkout: c8dc8cc01b2688bd790ee15a07317053fe617b43
+Export date: 2026-10-01
+License: Apache-2.0 (see LICENSE; source attribution comments are retained).
+
+Includes the training workspace's MOPD/OPD implementations and runtime plugins.
+This is a source snapshot, not a new upstream release or a complete runtime image.
+Datasets, checkpoints, logs, Git history, experiment launchers and site-specific
+build recipes are excluded. Unused test/example helpers and the legacy
+convert_to_hf.py entry are omitted. FusionEval adds optional head-node-first GPU ordering in
+slime/ray/placement_group.py for the two-node deployment. MOPD/OPD comments are shortened without changing executable code. Other included
+training modules are unchanged.

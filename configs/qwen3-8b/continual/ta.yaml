@@ -1,0 +1,33 @@
+# Five experts: IF -> Math -> Science -> Code -> Agent.
+schema_version: 1
+workflow: continual
+method: task_arithmetic
+parameters:
+  scale: 0.3
+model_profile: ../../models/qwen3-8b.yaml
+base: null
+initial: if
+experts:
+- id: math
+  path: null
+- id: code
+  path: null
+- id: agent
+  path: null
+- id: if
+  path: null
+- id: science
+  path: null
+order:
+- math
+- science
+- code
+- agent
+runtime:
+  device: cuda
+  precision: bfloat16
+  save_dtype: source
+  max_shard_size_gib: 5
+  seed: 42
+output: null
+log: null

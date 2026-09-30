@@ -29,7 +29,7 @@ class Block:
 class SharedContext:
 
     seed: int
-    precision: Literal["mergebench", "float32"] = "mergebench"
+    precision: Literal["bfloat16", "float32"] = "bfloat16"
     device: Literal["cpu", "cuda"] = "cpu"
     decoder_layers: int | None = None
     decoder_layer_prefix: str = "model.layers"
